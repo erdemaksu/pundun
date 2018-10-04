@@ -3,11 +3,12 @@ package pundun
 import (
 	"crypto/tls"
 	"encoding/binary"
-	"github.com/erdemaksu/scram"
+	"github.com/pundunlabs/go-scram"
 	"io"
 	"log"
 	"net"
 	"time"
+	"errors"
 )
 
 const (
@@ -20,6 +21,36 @@ type Session struct {
 	tidChan  chan uint16
 }
 
+func HSend(conn net.Conn, data []byte) (int, error) {
+	len := uint32(len(data))
+	header := make([]byte, 4)
+	binary.BigEndian.PutUint32(header, len)
+	conn.Write(header)
+	return conn.Write(data)
+}
+
+func HRead(conn net.Conn) ([]byte, error) {
+	lenBuf := make([]byte, 4)
+	n, herr := conn.Read(lenBuf)
+
+	if n != 4 {
+	    return nil, errors.New("could not read packet header")
+	}
+
+	if herr != nil {
+	    return nil, herr
+	}
+
+	len := binary.BigEndian.Uint32(lenBuf)
+	buf := make([]byte, len)
+	_, derr := io.ReadFull(conn, buf)
+	if derr != nil {
+	    return nil, derr
+	}
+
+	return buf, nil
+}
+
 type Client struct {
 	data        []byte
 	ch          chan []byte
@@ -27,7 +58,7 @@ type Client struct {
 	cancelTimer chan bool
 }
 
-func Connect(host, user, pass string) (Session, error) {
+func Connect(host string, user string, pass string) (Session, error) {
 	conf := &tls.Config{
 		InsecureSkipVerify: true,
 	}
@@ -38,7 +69,11 @@ func Connect(host, user, pass string) (Session, error) {
 		return Session{}, err
 	}
 
-	authErr := scram.Authenticate(conn, user, pass)
+	scramc := struct { scram.ScramConn } {}
+	scramc.Send = func(data []byte) (int, error) { return HSend(conn, data)}
+	scramc.Read = func() ([]byte, error) { return HRead(conn)}
+
+	authErr := scram.Authenticate(scramc, user, pass)
 	if authErr != nil {
 		log.Println(authErr)
 		conn.Close()
@@ -104,19 +139,16 @@ func serverLoop(conn net.Conn, manChan chan int, sendChan chan Client, recvChan 
 			removeClient(corrId, clients, pduBytes)
 		case client, _ := <-sendChan:
 			if checkCorrId(clients, cid) {
-				corrId := make([]byte, 2)
-				binary.BigEndian.PutUint16(corrId, cid)
-				data := client.data
-				len := uint32(len(data))
-				wire := make([]byte, len+6)
-				binary.BigEndian.PutUint32(wire, len+2)
-				copy(wire[4:], corrId)
-				copy(wire[6:], data)
+				len := uint32(len(client.data))
+				header := make([]byte, 6)
+				binary.BigEndian.PutUint32(header, len+2)
+				binary.BigEndian.PutUint16(header[4:], cid)
 				cancel := make(chan bool)
 				client.id = cid
 				client.cancelTimer = cancel
 				clients[cid] = client
-				conn.Write(wire)
+				conn.Write(header)
+				conn.Write(client.data)
 				go expireAfter(30, cid, timeout, cancel)
 				cid++
 			} else {
@@ -145,16 +177,16 @@ func recvLoop(conn net.Conn, recvChan chan []byte) {
 		if n != 4 || err != nil {
 			log.Printf("n: %v, error: %v", n, err)
 			return
+		}
+
+		// Receive encoded pdu
+		len := binary.BigEndian.Uint32(lenBuf)
+		buf := make([]byte, len)
+		n, err = io.ReadFull(conn, buf)
+		if uint32(n) != len || err != nil {
+			log.Printf("%v ?= %v || err ?= %v\n", n, len, err)
 		} else {
-			// Receive encoded pdu
-			len := binary.BigEndian.Uint32(lenBuf)
-			buf := make([]byte, len)
-			n, err = io.ReadFull(conn, buf)
-			if uint32(n) != len || err != nil {
-				log.Printf("%v ?= %v || err ?= %v\n", n, len, err)
-			} else {
-				recvChan <- buf
-			}
+			recvChan <- buf
 		}
 	}
 }
