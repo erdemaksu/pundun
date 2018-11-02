@@ -37,7 +37,7 @@ func TestRun1(t *testing.T) {
 		res, err = DeleteTable(session, tableName)
 		log.Printf("Delete Table result: %v\n", res)
 	}
-	log.Println("Create Table")
+	log.Printf("Create Table: %v\n", tableName)
 	res, err = CreateTable(session, tableName, keyDef, options)
 	log.Printf("Result: %v\n", res)
 
@@ -151,7 +151,7 @@ func TestRun1(t *testing.T) {
 	res, err = Delete(session, "nonexistingtable", key)
 	log.Printf("Delete non-existing Table result: %v\n", res)
 
-	log.Println("Delete Table")
+	log.Printf("Delete Table: %v\n", tableName)
 	res, err = DeleteTable(session, tableName)
 	log.Printf("Delete Table result: %v\n", res)
 }
