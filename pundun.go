@@ -203,6 +203,36 @@ func tidServe(tid, max int32, req chan string, resp chan int32) {
 	}
 }
 
+// Compose a AuthExchange PDU.
+func ComposeAuthExchange(s Session, payload []byte) ([]byte, error) {
+	authExchange := &apollo.AuthExchange{
+		Payload: payload,
+	}
+
+	procedure := &apollo.ApolloPdu_AuthExchange{
+		AuthExchange: authExchange,
+	}
+
+	pdu := &apollo.ApolloPdu{Procedure: procedure}
+	tid := GetTid(s)
+	pdu = makePdu(pdu, tid)
+	pduBin, err := proto.Marshal(pdu)
+	return pduBin, err
+}
+
+// De-Compose a AuthExchange PDU.
+func DecomposeAuthExchange(buf []byte) ([]byte, error) {
+	recvPdu := &apollo.ApolloPdu{}
+	err := proto.Unmarshal(buf, recvPdu)
+	if err != nil {
+		log.Println("unmarshaling error: ", err)
+		return nil, err
+	}
+	ae := recvPdu.GetAuthExchange()
+	payload := ae.GetPayload()
+	return payload, err
+}
+
 // Create a pundun table.
 func CreateTable(s Session, tableName string, key []string, options map[string]interface{}) (interface{}, error) {
 	tableOptions := fixOptions(options)
@@ -601,7 +631,7 @@ func ListTables(s Session) (interface{}, error) {
 
 func run_transaction(s Session, pdu *apollo.ApolloPdu) (interface{}, error) {
 	tid := GetTid(s)
-	pdu = make_pdu(pdu, tid)
+	pdu = makePdu(pdu, tid)
 	pduBin, err := proto.Marshal(pdu)
 	if err != nil {
 		log.Println("marshaling error: ", err)
@@ -617,7 +647,7 @@ func run_transaction(s Session, pdu *apollo.ApolloPdu) (interface{}, error) {
 	return res, err
 }
 
-func make_pdu(pdu *apollo.ApolloPdu, tid uint32) *apollo.ApolloPdu {
+func makePdu(pdu *apollo.ApolloPdu, tid uint32) *apollo.ApolloPdu {
 	version := &apollo.Version{
 		Major: *proto.Uint32(0),
 		Minor: *proto.Uint32(1),
@@ -979,7 +1009,7 @@ func fixField(k string, v interface{}, fields []*apollo.Field) []*apollo.Field {
 	var field *apollo.Field
 	value := fixValue(v)
 	field = &apollo.Field{Name: *proto.String(k),
-			      Value: value}
+		Value: value}
 	len := len(fields) + 1
 	newFields := make([]*apollo.Field, len)
 	copy(newFields, fields[:])
@@ -992,7 +1022,7 @@ func fixValue(v interface{}) *apollo.Value {
 	switch v.(type) {
 	case string:
 		value = &apollo.Value{
-			    Type: &apollo.Value_String_{*proto.String(v.(string))},
+			Type: &apollo.Value_String_{*proto.String(v.(string))},
 		}
 	case []byte:
 		value = &apollo.Value{
@@ -1032,7 +1062,7 @@ func fixValue(v interface{}) *apollo.Value {
 			values[i] = fixValue(e)
 		}
 		value = &apollo.Value{
-			    Type: &apollo.Value_List{
+			Type: &apollo.Value_List{
 				&apollo.ListValue{Values: values},
 			},
 		}
@@ -1080,18 +1110,18 @@ func fixUpdateOperation(upOp UpdateOperation, updateOperations []*apollo.UpdateO
 	setvalue := encodeInt32(upOp.SetValue)
 	updateInstruction = &apollo.UpdateInstruction{
 		Instruction: instruction,
-		Threshold: threshold,
-		SetValue: setvalue}
+		Threshold:   threshold,
+		SetValue:    setvalue}
 
 	value := fixValue(upOp.Value)
 	defaultValue := fixDefaultValue(upOp.DefaultValue)
 
 	var updateOperation *apollo.UpdateOperation
 	updateOperation = &apollo.UpdateOperation{
-		Field: *proto.String(upOp.Field),
+		Field:             *proto.String(upOp.Field),
 		UpdateInstruction: updateInstruction,
-		Value: value,
-		DefaultValue: defaultValue}
+		Value:             value,
+		DefaultValue:      defaultValue}
 
 	len := len(updateOperations) + 1
 	newUpdateOperations := make([]*apollo.UpdateOperation, len)
@@ -1130,7 +1160,7 @@ func fixIndexConfig(c IndexConfig, indexConfig []*apollo.IndexConfig) []*apollo.
 	column := c.Column
 	options := fixIndexOptions(c.Options)
 	var config = &apollo.IndexConfig{
-		Column: column,
+		Column:  column,
 		Options: options,
 	}
 	if config != nil {
@@ -1156,9 +1186,9 @@ func fixPostingFilter(pf PostingFilter) *apollo.PostingFilter {
 	endTs := setTs(pf.EndTs)
 	maxPostings := pf.MaxPostings
 	postingFilter := &apollo.PostingFilter{
-		SortBy: sortBy,
-		StartTs: startTs,
-		EndTs: endTs,
+		SortBy:      sortBy,
+		StartTs:     startTs,
+		EndTs:       endTs,
 		MaxPostings: maxPostings,
 	}
 	return postingFilter
@@ -1203,14 +1233,14 @@ func fixIndexOptions(opts IndexOptions) *apollo.IndexOptions {
 
 	tokenFilter := &apollo.TokenFilter{
 		Transform: transform,
-		Add: add,
-		Delete: delete,
-		Stats: stats,
+		Add:       add,
+		Delete:    delete,
+		Stats:     stats,
 	}
 
 	indexOptions := &apollo.IndexOptions{
-		CharFilter: charFilter,
-		Tokenizer: tokenizer,
+		CharFilter:  charFilter,
+		Tokenizer:   tokenizer,
 		TokenFilter: tokenFilter,
 	}
 	return indexOptions

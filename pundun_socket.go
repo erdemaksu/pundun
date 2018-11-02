@@ -3,12 +3,13 @@ package pundun
 import (
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"github.com/pundunlabs/go-scram"
 	"io"
 	"log"
 	"net"
+	"strings"
 	"time"
-	"errors"
 )
 
 const (
@@ -21,12 +22,19 @@ type Session struct {
 	tidChan  chan uint16
 }
 
-func HSend(conn net.Conn, data []byte) (int, error) {
-	len := uint32(len(data))
+func HSend(conn net.Conn, s Session, payload []byte) (int, error) {
+	pduBin, err := ComposeAuthExchange(s, payload)
+	if err != nil {
+		return 1, err
+	}
+	len := uint32(len(pduBin)) + 2
 	header := make([]byte, 4)
 	binary.BigEndian.PutUint32(header, len)
+	corrid := make([]byte, 2)
+	binary.BigEndian.PutUint16(corrid, 0)
 	conn.Write(header)
-	return conn.Write(data)
+	conn.Write(corrid)
+	return conn.Write(pduBin)
 }
 
 func HRead(conn net.Conn) ([]byte, error) {
@@ -34,21 +42,24 @@ func HRead(conn net.Conn) ([]byte, error) {
 	n, herr := conn.Read(lenBuf)
 
 	if n != 4 {
-	    return nil, errors.New("could not read packet header")
+		return nil, errors.New("could not read packet header")
 	}
 
 	if herr != nil {
-	    return nil, herr
+		return nil, herr
 	}
 
 	len := binary.BigEndian.Uint32(lenBuf)
 	buf := make([]byte, len)
 	_, derr := io.ReadFull(conn, buf)
 	if derr != nil {
-	    return nil, derr
+		return nil, derr
 	}
-
-	return buf, nil
+	payload, dcerr := DecomposeAuthExchange(buf[2:])
+	if dcerr != nil {
+		return nil, dcerr
+	}
+	return payload, nil
 }
 
 type Client struct {
@@ -69,14 +80,21 @@ func Connect(host string, user string, pass string) (Session, error) {
 		return Session{}, err
 	}
 
-	scramc := struct { scram.ScramConn } {}
-	scramc.Send = func(data []byte) (int, error) { return HSend(conn, data)}
-	scramc.Read = func() ([]byte, error) { return HRead(conn)}
+	tidChan := make(chan uint16, 1)
+	var tid uint16 = 0
+	go tidServer(tid, tidChan)
+	session := Session{tidChan: tidChan}
 
+	scramc := struct{ scram.ScramConn }{}
+	scramc.Send = func(data []byte) (int, error) {
+		return HSend(conn, session, data)
+	}
+	scramc.Read = func() ([]byte, error) { return HRead(conn) }
 	authErr := scram.Authenticate(scramc, user, pass)
 	if authErr != nil {
 		log.Println(authErr)
 		conn.Close()
+		defer close(tidChan)
 		return Session{}, authErr
 	}
 	log.Println("Connected to pundun node.")
@@ -86,12 +104,9 @@ func Connect(host string, user string, pass string) (Session, error) {
 
 	go serverLoop(conn, manChan, sendChan, recvChan)
 	go recvLoop(conn, recvChan)
-
-	tidChan := make(chan uint16, 1)
-	var tid uint16 = 0
-	go tidServer(tid, tidChan)
-
-	return Session{manChan, sendChan, tidChan}, err
+	session.manChan = manChan
+	session.sendChan = sendChan
+	return session, nil
 }
 
 func Disconnect(s Session) {
@@ -175,7 +190,12 @@ func recvLoop(conn net.Conn, recvChan chan []byte) {
 		n, err := conn.Read(lenBuf)
 
 		if n != 4 || err != nil {
-			log.Printf("n: %v, error: %v", n, err)
+			if strings.Contains(err.Error(),
+				"use of closed network connection") {
+				log.Printf("Connection closed.\n")
+			} else {
+				log.Printf("n: %v, error: %v\n", n, err.Error())
+			}
 			return
 		}
 
